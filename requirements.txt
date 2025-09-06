@@ -1,0 +1,8 @@
+dash
+plotly 
+numpy 
+pandas 
+wordcloud 
+openpyxl 
+reportlab 
+kaleido
