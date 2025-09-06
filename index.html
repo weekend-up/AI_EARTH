@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AI数字孪生地球 · 一体化公开课版本（稳定）</title>
+  <link href="https://unpkg.com/cesium/Build/Cesium/Widgets/widgets.css" rel="stylesheet" />
+  <!-- 关键：先设置 BASE_URL，确保 Workers/Assets 正常加载 -->
+  <script>window.CESIUM_BASE_URL = "https://unpkg.com/cesium/Build/Cesium/";</script>
+  <script src="https://unpkg.com/cesium/Build/Cesium/Cesium.js"></script>
+  <style>
+    html, body, #cesiumContainer { width: 100%; height: 100%; margin: 0; padding: 0; overflow: hidden; }
+    .toolbar { position:absolute; top:10px; left:10px; z-index:10; background:rgba(0,0,0,0.55); color:#fff; padding:10px 12px; border-radius:12px; font-family:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial; backdrop-filter: blur(6px); }
+    .toolbar label { font-size: 12px; opacity:.9; }
+    .toolbar input[type="date"], .toolbar input[type="time"], .toolbar select { background: rgba(255,255,255,.1); color:#fff; border:1px solid rgba(255,255,255,.25); border-radius:8px; padding:6px 8px; margin:4px 0 8px; width: 180px; }
+    .toolbar button { border:0; border-radius:999px; padding:6px 12px; margin:2px 6px 2px 0; cursor:pointer; }
+    .toolbar .group { margin-right: 12px; }
+    .readout { margin-top: 6px; font-size: 12px; line-height: 1.45; }
+
+    .panel { position:absolute; bottom: 10px; left: 10px; z-index:10; max-width: 560px; background: rgba(0,0,0,0.55); color:#fff; padding:10px 12px; border-radius:12px; font-size:12px; font-family:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial; }
+    .legend { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+    .dot { width:10px; height:10px; border-radius:50%; display:inline-block; }
+    .dot.sun { background:#ffd54a; box-shadow:0 0 8px #ffd54a; }
+    .dot.pick { background:#00e5ff; box-shadow:0 0 8px #00e5ff; }
+    .dot.tropic { background:#ffa2a2; }
+
+    #diagOverlay{position:absolute; inset:0; display:none; align-items:center; justify-content:center; background:rgba(0,0,0,.6); color:#fff; z-index:9999; text-align:center; padding:20px; font-family:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial}
+    #diagOverlay .box{max-width:760px; background:rgba(20,20,20,.85); border:1px solid rgba(255,255,255,.2); border-radius:14px; padding:16px 18px}
+    #diagOverlay code{background:rgba(255,255,255,.08); padding:2px 6px; border-radius:6px}
+  </style>
+</head>
+<body>
+  <div id="cesiumContainer"></div>
+
+  <div class="toolbar">
+    <div style="display:flex; gap:12px; align-items:flex-end; flex-wrap:wrap;">
+      <div class="group">
+        <label>日期 (UTC)</label><br/>
+        <input id="dateInput" type="date" />
+      </div>
+      <div class="group">
+        <label>时间 (UTC)</label><br/>
+        <input id="timeInput" type="time" step="60" />
+      </div>
+      <div class="group">
+        <label>播放</label><br/>
+        <button id="playBtn">▶︎ 播放</button>
+        <button id="pauseBtn">⏸︎ 暂停</button>
+        <button id="nowBtn">⏱ 回到现在</button>
+      </div>
+      <div class="group">
+        <label>节气快捷</label><br/>
+        <button class="js-preset" data-mm="03" data-dd="20">春分</button>
+        <button class="js-preset" data-mm="06" data-dd="21">夏至</button>
+        <button class="js-preset" data-mm="09" data-dd="22">秋分</button>
+        <button class="js-preset" data-mm="12" data-dd="21">冬至</button>
+      </div>
+      <div class="group">
+        <label>定位城市</label><br/>
+        <select id="citySelect"></select>
+      </div>
+      <div class="group">
+        <label>显示</label><br/>
+        <button id="toggleSubsolarTrack">☀︎ 直射点轨迹</button>
+        <label style="display:inline-flex;align-items:center;gap:6px;"><input id="toggleIsolines" type="checkbox"/> 等白昼时长</label>
+      </div>
+      <div class="group">
+        <label>影像源</label><br/>
+        <button id="btnOSM">OpenStreetMap</button>
+        <button id="btnArcGIS">ArcGIS 影像</button>
+        <button id="btnGrid">网格底图</button>
+      </div>
+    </div>
+    <div class="readout" id="timeReadout">—</div>
+    <div class="readout" id="pickedReadout">点击地球任意点，可读取该时刻太阳高度角、白昼长度；下方小图给出当天高度曲线与日出/日落/正午。</div>
+  </div>
+
+  <div class="panel">
+    <div class="legend">
+      <span class="dot sun"></span> 太阳直射点（Subsolar）
+      <span class="dot pick"></span> 选取点（学生点击）
+      <span class="dot tropic"></span> 回归线/赤道
+      <span class="badge">提示</span> 一键切换节气；城市下拉快速定位；影像源可切换以防网控
+    </div>
+    <div id="chartWrap" style="margin-top:8px;">
+      <div style="font-weight:600; margin-bottom:6px;">当天太阳高度—时间曲线（UTC；含日出/日落/正午标记）</div>
+      <svg id="skyChart" width="520" height="220" style="background:rgba(255,255,255,0.06); border-radius:8px;"></svg>
+    </div>
+  </div>
+
+  <div id="diagOverlay"><div class="box" id="diagText">正在诊断…</div></div>
+
+  <script>
+    // —— 诊断工具 ——
+    const overlay = document.getElementById('diagOverlay');
+    const diagText = document.getElementById('diagText');
+    function showDiag(html){ overlay.style.display='flex'; diagText.innerHTML = html; }
+    // 兼容性：某些 Cesium 版本中 FeatureDetection.supportsWebGL 不再提供
+    function supportsWebGL(){
+      try{
+        const c = document.createElement('canvas');
+        return !!(c.getContext('webgl2') || c.getContext('webgl') || c.getContext('experimental-webgl'));
+      }catch(e){ return false; }
+    }
+    if (!supportsWebGL()){
+      showDiag('此浏览器/设备不支持 <b>WebGL</b>，无法渲染 3D 地球。请使用最新版 Chrome/Edge，并在设置中开启硬件加速。');
+    }
+
+    // —— 创建 Viewer（默认 OSM，可一键切换） ——
+    // 首选 OSM 影像；若失败自动回退 ArcGIS
+    const osmProvider = new Cesium.UrlTemplateImageryProvider({
+      url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+      credit: '© OpenStreetMap contributors'
+    });
+
+    const viewer = new Cesium.Viewer('cesiumContainer', {
+      imageryProvider : osmProvider,
+      baseLayerPicker : false,
+      geocoder: false,
+      timeline: true,
+      animation: true
+    });
+
+    function useArcGIS(){
+      try{
+        viewer.imageryLayers.removeAll();
+      }catch(e){}
+      const arc = new Cesium.ArcGisMapServerImageryProvider({
+        url: 'https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer'
+      });
+      viewer.imageryLayers.addImageryProvider(arc);
+    }
+
+    // 如果 OSM 瓦片加载报错，自动切 ArcGIS
+    if (osmProvider && osmProvider.errorEvent){
+      osmProvider.errorEvent.addEventListener(()=>{
+        showDiag('OpenStreetMap 影像加载失败，已自动切换到 <b>ArcGIS World Imagery</b>。');
+        useArcGIS();
+      });
+    }
+    viewer.scene.globe.enableLighting = true;
+    viewer.camera.setView({ destination: Cesium.Cartesian3.fromDegrees(105, 25, 2.0e7) });
+    viewer.scene.renderError.addEventListener((e)=>{
+      showDiag('渲染出错：可能是 <b>Cesium 资源</b> 或 <b>网络</b> 被拦截。<br>解决：1) 已设置 <code>window.CESIUM_BASE_URL</code>；2) 请通过 <code>http://localhost</code> 打开；3) 放行 <code>unpkg.com</code> 与 <code>tile.openstreetmap.org</code>。');
+      console.error('Cesium render error:', e);
+    });
+
+    // —— 时间 UI ——
+    function pad2(n){ return n.toString().padStart(2,'0'); }
+    function toUTCInputs(d){ const y=d.getUTCFullYear(); const mm=pad2(d.getUTCMonth()+1); const dd=pad2(d.getUTCDate()); const HH=pad2(d.getUTCHours()); const MM=pad2(d.getUTCMinutes()); return {date:`${y}-${mm}-${dd}`, time:`${HH}:${MM}`}; }
+    const dateInput = document.getElementById('dateInput');
+    const timeInput = document.getElementById('timeInput');
+    const timeReadout = document.getElementById('timeReadout');
+    const pickedReadout = document.getElementById('pickedReadout');
+    const now = new Date();
+    const init = toUTCInputs(now); dateInput.value = init.date; timeInput.value = init.time;
+
+    function updateClockFromInputs(){
+      const dt = new Date(`${dateInput.value}T${timeInput.value}:00Z`);
+      const jd = Cesium.JulianDate.fromDate(dt);
+      viewer.clock.startTime = Cesium.JulianDate.addDays(jd, -365, new Cesium.JulianDate());
+      viewer.clock.stopTime  = Cesium.JulianDate.addDays(jd,  365, new Cesium.JulianDate());
+      viewer.clock.currentTime = jd;
+      viewer.clock.multiplier = 2000;
+      viewer.clock.shouldAnimate = false;
+      timeReadout.textContent = `UTC: ${dt.toUTCString()}`;
+      updateSubsolar(dt);
+      if (showSubsolarTrack) renderSubsolarTrackForDate(dt);
+      if (document.getElementById('toggleIsolines').checked) renderDaylengthIsolines(dt);
+    }
+    document.getElementById('playBtn').onclick = ()=> viewer.clock.shouldAnimate = true;
+    document.getElementById('pauseBtn').onclick = ()=> viewer.clock.shouldAnimate = false;
+    document.getElementById('nowBtn').onclick = ()=>{ const n=new Date(); const x=toUTCInputs(n); dateInput.value=x.date; timeInput.value=x.time; updateClockFromInputs(); };
+    document.querySelectorAll('.js-preset').forEach(btn=> btn.addEventListener('click', ()=>{ const y=new Date().getUTCFullYear(); dateInput.value=`${y}-${btn.dataset.mm}-${btn.dataset.dd}`; timeInput.value='12:00'; updateClockFromInputs(); }));
+    dateInput.addEventListener('change', updateClockFromInputs);
+    timeInput.addEventListener('change', updateClockFromInputs);
+
+    // —— 影像源切换（OSM / ArcGIS / 网格） ——
+    document.getElementById('btnOSM').onclick = ()=>{
+      viewer.imageryLayers.removeAll();
+      viewer.imageryLayers.addImageryProvider(new Cesium.UrlTemplateImageryProvider({ url:'https://tile.openstreetmap.org/{z}/{x}/{y}.png', credit:'© OpenStreetMap contributors' }));
+    };
+    document.getElementById('btnArcGIS').onclick = ()=>{ useArcGIS(); };
+    document.getElementById('btnGrid').onclick = ()=>{
+      viewer.imageryLayers.removeAll();
+      viewer.imageryLayers.addImageryProvider(new Cesium.GridImageryProvider({ cells: 8 }));
+    };
+    document.getElementById('btnGrid').onclick = ()=>{ viewer.imageryLayers.removeAll(); viewer.imageryLayers.addImageryProvider(new Cesium.GridImageryProvider({ cells: 8 })); };
+
+    // —— 关键纬线 ——
+    const tropicLat = 23.4397, colorT = Cesium.Color.fromCssColorString('#ffa2a2');
+    function addParallel(lat){ const pos=[]; for(let lon=-180; lon<=180; lon+=2) pos.push(Cesium.Cartesian3.fromDegrees(lon,lat)); return viewer.entities.add({ polyline:{ positions:pos, width:1.5, material: colorT } }); }
+    addParallel(0); addParallel(tropicLat); addParallel(-tropicLat);
+
+    // —— 太阳直射点：ICRF → 固定系（带预加载与降级） ——
+    let subsolarEntity = viewer.entities.add({ position: Cesium.Cartesian3.fromDegrees(0,0), point:{ pixelSize:12, color: Cesium.Color.YELLOW.withAlpha(0.95), outlineColor: Cesium.Color.BLACK, outlineWidth:2 }, label:{ text:'太阳直射点', font:'bold 13px sans-serif', pixelOffset:new Cesium.Cartesian2(0,-18), fillColor: Cesium.Color.WHITE } });
+    let subsolarTrackEntity = null, showSubsolarTrack = false; let icrfReady=false; let lastSunDir=null;
+    (function preloadICRF(){ const nowJD=Cesium.JulianDate.now(); const start=Cesium.JulianDate.addDays(nowJD,-500,new Cesium.JulianDate()); const stop=Cesium.JulianDate.addDays(nowJD,500,new Cesium.JulianDate()); const interval=new Cesium.TimeInterval({start,stop}); Cesium.Transforms.preloadIcrfFixed(interval).then(()=>icrfReady=true).catch(()=>icrfReady=false); })();
+    function getSunDirection(jd){ const sunInertial=Cesium.Simon1994PlanetaryPositions.computeSunPositionInEarthInertialFrame(jd,new Cesium.Cartesian3()); const m=Cesium.Transforms.computeIcrfToFixedMatrix(jd,new Cesium.Matrix3()); if(!Cesium.defined(sunInertial)||!Cesium.defined(m)) return null; const sunFixed=Cesium.Matrix3.multiplyByVector(m,sunInertial,new Cesium.Cartesian3()); return Cesium.Cartesian3.normalize(sunFixed,new Cesium.Cartesian3()); }
+    function computeSubsolarCartographic(jd){ const dir=getSunDirection(jd); if(!dir) return null; const R=Cesium.Ellipsoid.WGS84.maximumRadius; const surface=Cesium.Cartesian3.multiplyByScalar(dir,R,new Cesium.Cartesian3()); return Cesium.Cartographic.fromCartesian(surface); }
+    function updateSubsolar(dateObj){ const jd=Cesium.JulianDate.fromDate(dateObj); const dir=getSunDirection(jd) || lastSunDir; if(!dir) return; lastSunDir=dir; const R=Cesium.Ellipsoid.WGS84.maximumRadius; const surface=Cesium.Cartesian3.multiplyByScalar(dir,R,new Cesium.Cartesian3()); const carto=Cesium.Cartographic.fromCartesian(surface); const lon=Cesium.Math.toDegrees(carto.longitude); const lat=Cesium.Math.toDegrees(carto.latitude); subsolarEntity.position=Cesium.Cartesian3.fromDegrees(lon,lat); subsolarEntity.label.text = `太阳直射点\nlat ${lat.toFixed(2)}°, lon ${lon.toFixed(2)}°${icrfReady ? '' : '\n(ICRF数据加载中...)'}`; }
+    function renderSubsolarTrackForDate(dateObj){ if(!showSubsolarTrack) return; const positions=[]; const dayStart=new Date(Date.UTC(dateObj.getUTCFullYear(),dateObj.getUTCMonth(),dateObj.getUTCDate(),0,0,0)); for(let h=0; h<=24; h+=1){ const t=new Date(dayStart.getTime()+h*3600*1000); const jd=Cesium.JulianDate.fromDate(t); const c=computeSubsolarCartographic(jd); if(c){ const lon=Cesium.Math.toDegrees(c.longitude); const lat=Cesium.Math.toDegrees(c.latitude); positions.push(Cesium.Cartesian3.fromDegrees(lon,lat)); } } if(positions.length<2) return; if(subsolarTrackEntity) viewer.entities.remove(subsolarTrackEntity); subsolarTrackEntity=viewer.entities.add({ polyline:{ positions, width:2, material: Cesium.Color.YELLOW.withAlpha(0.7) } }); }
+
+    // —— 点击读数：高度角 + 白昼时长 + 小图 ——
+    let pickedEntity; const handler=new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
+    handler.setInputAction((movement)=>{
+      let cartesian=viewer.scene.pickPosition(movement.position); if(!Cesium.defined(cartesian)) cartesian=viewer.camera.pickEllipsoid(movement.position,Cesium.Ellipsoid.WGS84); if(!Cesium.defined(cartesian)) return;
+      const carto=Cesium.Cartographic.fromCartesian(cartesian); const lon=Cesium.Math.toDegrees(carto.longitude); const lat=Cesium.Math.toDegrees(carto.latitude);
+      const jd=viewer.clock.currentTime; const sunDir=getSunDirection(jd)||lastSunDir; if(!sunDir){ pickedReadout.textContent='太阳方向数据加载中，请稍后再点一次。'; return; }
+      const surf=Cesium.Cartesian3.normalize(cartesian,new Cesium.Cartesian3()); let cosZ=Cesium.Cartesian3.dot(surf,sunDir); cosZ=Math.max(-1,Math.min(1,cosZ)); const zenith=Cesium.Math.toDegrees(Math.acos(cosZ)); const elev=90-zenith;
+      if(!pickedEntity){ pickedEntity=viewer.entities.add({ position: Cesium.Cartesian3.fromDegrees(lon,lat), point:{ pixelSize:10, color: Cesium.Color.CYAN.withAlpha(0.95), outlineColor: Cesium.Color.BLACK, outlineWidth:2 }, label:{ text:'', font:'bold 12px sans-serif', pixelOffset:new Cesium.Cartesian2(0,-18), fillColor: Cesium.Color.WHITE } }); }
+      pickedEntity.position=Cesium.Cartesian3.fromDegrees(lon,lat); pickedEntity.label.text=`选取点\nlat ${lat.toFixed(2)}°, lon ${lon.toFixed(2)}°`;
+      const date=Cesium.JulianDate.toDate(jd); const decl=solarDeclinationApprox(date); const dayLen=computeDayLengthHours(lat,decl); const ss=computeSunriseSunsetUTC(lat,lon,date);
+      pickedReadout.innerHTML=`选取点：纬度 <b>${lat.toFixed(2)}°</b>，经度 <b>${lon.toFixed(2)}°</b>｜该时刻太阳高度角 <b>${elev.toFixed(2)}°</b>｜白昼时长(当天) <b>${dayLen.toFixed(2)} h</b>${ss.text}${icrfReady?'':'（ICRF数据加载中）'}`;
+      drawSkyChartForPoint(lat,lon,date,ss);
+      viewer.camera.flyTo({ destination: Cesium.Cartesian3.fromDegrees(lon,lat,1.5e7), duration:1.2 });
+    }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+
+    // —— 时钟联动 ——
+    viewer.clock.onTick.addEventListener(function(clock){ const jsDate=Cesium.JulianDate.toDate(clock.currentTime); timeReadout.textContent=`UTC: ${jsDate.toUTCString()}`; updateSubsolar(jsDate); if(showSubsolarTrack) renderSubsolarTrackForDate(jsDate); if(document.getElementById('toggleIsolines').checked) renderDaylengthIsolines(jsDate); });
+
+    // —— 初始化 ——
+    updateClockFromInputs();
+
+    // —— δ 近似、白昼、日出日落、曲线 ——
+    function solarDeclinationApprox(date){ const start=new Date(Date.UTC(date.getUTCFullYear(),0,1,0,0,0)); const N=Math.floor((date-start)/86400000)+1; const g=2*Math.PI/365*(N-1+(date.getUTCHours()-12)/24); const d=0.006918-0.399912*Math.cos(g)+0.070257*Math.sin(g)-0.006758*Math.cos(2*g)+0.000907*Math.sin(2*g)-0.002697*Math.cos(3*g)+0.00148*Math.sin(3*g); return d*180/Math.PI; }
+    function computeDayLengthHours(lat,decl){ const rad=Math.PI/180, phi=lat*rad, d=decl*rad; const x=-Math.tan(phi)*Math.tan(d); if(x>=1) return 0; if(x<=-1) return 24; const H0=Math.acos(x); return 2*H0*(180/Math.PI)/15.0; }
+    function computeSunriseSunsetUTC(lat,lon,date){ const decl=solarDeclinationApprox(date); const rad=Math.PI/180, phi=lat*rad, d=decl*rad; const x=-Math.tan(phi)*Math.tan(d); const fmt=h=>`${String(Math.floor(h)).padStart(2,'0')}:${String(Math.round((h%1)*60)).padStart(2,'0')}`; if(x>=1) return {sunrise:null,sunset:null,noonUTC:(12-lon/15), text:'｜极夜（无日出/日落）'}; if(x<=-1) return {sunrise:0,sunset:24,noonUTC:(12-lon/15), text:'｜极昼（全天日照）'}; const H0deg=Math.acos(x)*180/Math.PI; const half=H0deg/15; const noon=12-lon/15; const rise=(noon-half+24)%24, set=(noon+half+24)%24; return {sunrise:rise,sunset:set,noonUTC:noon, text:`｜日出(UTC) <b>${fmt(rise)}</b>｜正午(UTC) <b>${fmt(noon)}</b>｜日落(UTC) <b>${fmt(set)}</b>`}; }
+    function drawSkyChartForPoint(lat,lon,date,ss){ const svg=document.getElementById('skyChart'); svg.setAttribute('viewBox','0 0 520 220'); while(svg.firstChild) svg.removeChild(svg.firstChild); const pts=[]; const dayStart=new Date(Date.UTC(date.getUTCFullYear(),date.getUTCMonth(),date.getUTCDate(),0,0,0)); for(let m=0;m<=24*60;m+=10){ const t=new Date(dayStart.getTime()+m*60*1000); const jd=Cesium.JulianDate.fromDate(t); const sunDir=getSunDirection(jd)||lastSunDir; if(!sunDir) continue; const cart=Cesium.Cartesian3.fromDegrees(lon,lat); const surf=Cesium.Cartesian3.normalize(cart,new Cesium.Cartesian3()); let cosZ=Cesium.Cartesian3.dot(surf,sunDir); cosZ=Math.max(-1,Math.min(1,cosZ)); const zen=Math.acos(cosZ)*180/Math.PI; const elev=90-zen; pts.push({m,elev}); } const x=v=> (v/24)*440+50, y=v=> (1-(v+10)/100)*170+20; const grid=document.createElementNS('http://www.w3.org/2000/svg','g'); grid.setAttribute('opacity','0.35'); for(let h=0; h<=24; h+=2){ const line=document.createElementNS('http://www.w3.org/2000/svg','line'); line.setAttribute('x1',x(h)); line.setAttribute('y1',y(-10)); line.setAttribute('x2',x(h)); line.setAttribute('y2',y(90)); line.setAttribute('stroke','white'); line.setAttribute('stroke-width','0.5'); grid.appendChild(line);} for(let v=-10; v<=90; v+=10){ const line=document.createElementNS('http://www.w3.org/2000/svg','line'); line.setAttribute('x1',x(0)); line.setAttribute('y1',y(v)); line.setAttribute('x2',x(24)); line.setAttribute('y2',y(v)); line.setAttribute('stroke','white'); line.setAttribute('stroke-width','0.5'); grid.appendChild(line);} svg.appendChild(grid); const path=document.createElementNS('http://www.w3.org/2000/svg','path'); const d=pts.map((p,i)=>`${i?'L':'M'}${x(p.m/60)} ${y(p.elev)}`).join(' '); path.setAttribute('d',d); path.setAttribute('fill','none'); path.setAttribute('stroke','white'); path.setAttribute('stroke-width','1.8'); svg.appendChild(path); const label=(tx,ty,text)=>{ const t=document.createElementNS('http://www.w3.org/2000/svg','text'); t.setAttribute('x',tx); t.setAttribute('y',ty); t.setAttribute('fill','white'); t.setAttribute('font-size','10'); t.textContent=text; svg.appendChild(t); }; if(ss){ const mk=(h,lab)=>{ const g=document.createElementNS('http://www.w3.org/2000/svg','g'); const line=document.createElementNS('http://www.w3.org/2000/svg','line'); line.setAttribute('x1',x(h)); line.setAttribute('y1',y(-10)); line.setAttribute('x2',x(h)); line.setAttribute('y2',y(90)); line.setAttribute('stroke','white'); line.setAttribute('stroke-width','1'); line.setAttribute('stroke-dasharray','4 3'); const tx=document.createElementNS('http://www.w3.org/2000/svg','text'); tx.setAttribute('x',x(h)+3); tx.setAttribute('y',y(88)); tx.setAttribute('fill','white'); tx.setAttribute('font-size','10'); tx.textContent=lab; g.appendChild(line); g.appendChild(tx); svg.appendChild(g); }; if(ss.sunrise!=null) mk(ss.sunrise,'日出'); mk(ss.noonUTC,'正午'); if(ss.sunset!=null) mk(ss.sunset,'日落'); const Hnoon=90-Math.abs(lat-solarDeclinationApprox(date)); const dot=document.createElementNS('http://www.w3.org/2000/svg','circle'); dot.setAttribute('cx',x(ss.noonUTC)); dot.setAttribute('cy',y(Hnoon)); dot.setAttribute('r','3'); dot.setAttribute('fill','white'); svg.appendChild(dot); const tx=document.createElementNS('http://www.w3.org/2000/svg','text'); tx.setAttribute('x',x(ss.noonUTC)+5); tx.setAttribute('y',y(Hnoon)-4); tx.setAttribute('fill','white'); tx.setAttribute('font-size','10'); tx.textContent=`H_max≈${Hnoon.toFixed(1)}°`; svg.appendChild(tx); } label(x(0),y(-13),'0h'); label(x(6),y(-13),'6h'); label(x(12),y(-13),'12h'); label(x(18),y(-13),'18h'); label(x(24),y(-13),'24h'); label(x(0)-28,y(-10),'-10°'); label(x(0)-22,y(0),'0°'); label(x(0)-22,y(30),'30°'); label(x(0)-22,y(60),'60°'); label(x(0)-22,y(90),'90°'); }
+
+    // —— 等白昼时长 ——
+    const isolineHours=[8,10,12,14,16]; let isolineEntities=[];
+    function clearIsolines(){ isolineEntities.forEach(e=>viewer.entities.remove(e)); isolineEntities=[]; }
+    function renderDaylengthIsolines(dateObj){ clearIsolines(); const decl=solarDeclinationApprox(dateObj); const tanD=Math.tan(decl*Math.PI/180); const color=Cesium.Color.fromCssColorString('#7cf0ff').withAlpha(0.7); isolineHours.forEach(H=>{ const H0=(H*15)/2; const cosH0=Math.cos(H0*Math.PI/180); if(Math.abs(tanD)<1e-6) return; const tanPhi=-cosH0/tanD; const phi=Math.atan(tanPhi)*180/Math.PI; if(!isFinite(phi)) return; const pos=[]; for(let lon=-180; lon<=180; lon+=2) pos.push(Cesium.Cartesian3.fromDegrees(lon,phi)); const ent=viewer.entities.add({ polyline:{ positions:pos, width:1.5, material: color }, description:`白昼≈${H}h` }); isolineEntities.push(ent); }); }
+    document.getElementById('toggleIsolines').addEventListener('change', (e)=>{ if(e.target.checked) renderDaylengthIsolines(Cesium.JulianDate.toDate(viewer.clock.currentTime)); else clearIsolines(); });
+
+    // —— 城市定位 ——
+    const cities=[
+      {name:'北京 Beijing',lat:39.9042,lon:116.4074}, {name:'上海 Shanghai',lat:31.2304,lon:121.4737}, {name:'东京 Tokyo',lat:35.6762,lon:139.6503}, {name:'新加坡 Singapore',lat:1.3521,lon:103.8198}, {name:'河内 Hanoi',lat:21.0278,lon:105.8342}, {name:'新德里 Delhi',lat:28.6139,lon:77.2090}, {name:'开罗 Cairo',lat:30.0444,lon:31.2357}, {name:'内罗毕 Nairobi',lat:-1.2921,lon:36.8219}, {name:'基多 Quito',lat:-0.1807,lon:-78.4678}, {name:'纽约 New York',lat:40.7128,lon:-74.0060}, {name:'伦敦 London',lat:51.5074,lon:-0.1278}, {name:'莫斯科 Moscow',lat:55.7558,lon:37.6173}, {name:'雷克雅未克 Reykjavik',lat:64.1466,lon:-21.9426}, {name:'洛杉矶 Los Angeles',lat:34.0522,lon:-118.2437}, {name:'悉尼 Sydney',lat:-33.8688,lon:151.2093}, {name:'墨尔本 Melbourne',lat:-37.8136,lon:144.9631}, {name:'约翰内斯堡 Johannesburg',lat:-26.2041,lon:28.0473}, {name:'乌斯怀亚 Ushuaia',lat:-54.8019,lon:-68.3030}
+    ];
+    const citySelect=document.getElementById('citySelect'); cities.forEach(c=>{ const o=document.createElement('option'); o.value=`${c.lat},${c.lon}`; o.textContent=c.name; citySelect.appendChild(o); });
+    citySelect.addEventListener('change', ()=>{ const [lat,lon]=citySelect.value.split(',').map(parseFloat); if(isFinite(lat)&&isFinite(lon)){ viewer.camera.flyTo({ destination: Cesium.Cartesian3.fromDegrees(lon,lat,1.8e7), duration: 1.2 }); const date=Cesium.JulianDate.toDate(viewer.clock.currentTime); const decl=solarDeclinationApprox(date); const dayLen=computeDayLengthHours(lat,decl); const ss=computeSunriseSunsetUTC(lat,lon,date); pickedReadout.innerHTML=`选取点：纬度 <b>${lat.toFixed(2)}°</b>，经度 <b>${lon.toFixed(2)}°</b>｜白昼时长(当天) <b>${dayLen.toFixed(2)} h</b>${ss.text}`; drawSkyChartForPoint(lat,lon,date,ss); } });
+
+    // —— 轨迹开关 ——
+    document.getElementById('toggleSubsolarTrack').onclick=()=>{ showSubsolarTrack=!showSubsolarTrack; if(!showSubsolarTrack&&subsolarTrackEntity){ viewer.entities.remove(subsolarTrackEntity); subsolarTrackEntity=null; } const jsDate=Cesium.JulianDate.toDate(viewer.clock.currentTime); if(showSubsolarTrack) renderSubsolarTrackForDate(jsDate); };
+  </script>
+</body>
+</html>
